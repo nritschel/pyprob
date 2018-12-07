@@ -1,6 +1,7 @@
 from torch.utils.data import Dataset, ConcatDataset
 import math
 import os
+import sys
 import uuid
 from termcolor import colored
 
@@ -23,6 +24,9 @@ class Batch():
             sub_batches[trace_hash].append(trace)
         self.sub_batches = list(sub_batches.values())
 
+    def __len__(self):
+        return len(self.traces)
+
     def __getitem__(self, key):
         return self.traces[key]
 
@@ -32,9 +36,10 @@ class Batch():
 
 
 class DatasetOnline(Dataset):
-    def __init__(self, model, length, prior_inflation=PriorInflation.DISABLED):
+    def __init__(self, model, length=None, prior_inflation=PriorInflation.DISABLED):
         self._model = model
-        self._length = length
+        if length is None:
+            self._length = int(1e6)
         self._prior_inflation = prior_inflation
 
     def __len__(self):
@@ -139,7 +144,8 @@ class DatasetOffline(ConcatDataset):
             try:
                 dataset = DatasetOfflinePerFile(file)
                 datasets.append(dataset)
-            except:
+            except Exception as e:
+                print(e)
                 print(colored('Warning: dataset file potentially corrupt, omitting: {}'.format(file), 'red', attrs=['bold']))
 
         super().__init__(datasets)

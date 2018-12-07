@@ -1,4 +1,4 @@
-FROM nvidia/cuda:9.2-cudnn7-devel-ubuntu18.04
+FROM ubuntu:18.04
 
 ENV PYTHON_VERSION=3.7
 ENV CC=gcc-5
@@ -29,8 +29,7 @@ ENV PATH /opt/conda/bin:$PATH
 # Enable dbm.gnu
 RUN cp /usr/lib/python3.7/lib-dynload/_gdbm.cpython-37m-x86_64-linux-gnu.so /opt/conda/lib/python3.7/lib-dynload/
 
-RUN pip install --upgrade pip
-RUN pip install 'torch==0.4.1.post2' 'torchvision==0.2.1'
+RUN conda install pytorch-nightly-cpu=1.0.0.dev20181205 -c pytorch
 
 RUN mkdir -p /code/pyprob
 COPY . /code/pyprob
