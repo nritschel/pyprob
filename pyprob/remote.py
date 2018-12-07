@@ -21,6 +21,10 @@ from .ppx import Sample as ppx_Sample
 from .ppx import SampleResult as ppx_SampleResult
 from .ppx import Observe as ppx_Observe
 from .ppx import ObserveResult as ppx_ObserveResult
+from .ppx import Forward as ppx_Forward
+from .ppx import ForwardResult as ppx_ForwardResult
+from .ppx import Backward as ppx_Backward
+from .ppx import BackwardResult as ppx_BackwardResult
 from .ppx import Tag as ppx_Tag
 from .ppx import TagResult as ppx_TagResult
 from .ppx import Reset as ppx_Reset
@@ -55,7 +59,6 @@ class ZMQRequester():
 
     def receive_reply(self):
         return self._socket.recv()
-
 
 class ModelServer(object):
     def __init__(self, server_address):
@@ -160,6 +163,73 @@ class ModelServer(object):
             return system_name, model_name
         else:
             raise RuntimeError('ppx (Python): Unexpected reply to handshake.')
+
+    def get_function_ref(self, name):
+        return ModelServerFunction(self, name)
+
+    def _run_function_forward(self, name, input):
+        builder = flatbuffers.Builder(64)
+
+        # construct MessageBody
+        arguments = self._variable_to_protocol_tensor(builder, input.detach())
+        fname = builder.CreateString(name)
+        ppx_Forward.ForwardStart(builder)
+        ppx_Forward.ForwardAddName(builder, fname)
+        ppx_Forward.ForwardAddInput(builder, arguments)
+        message_body = ppx_Forward.ForwardEnd(builder)
+        builder.Finish(message_body)
+
+        # construct Message
+        ppx_Message.MessageStart(builder)
+        ppx_Message.MessageAddBodyType(builder, ppx_MessageBody.MessageBody().Forward)
+        ppx_Message.MessageAddBody(builder, message_body)
+        message = ppx_Message.MessageEnd(builder)
+        builder.Finish(message)
+
+        message = builder.Output()
+        self._requester.send_request(message)
+
+        reply = self._requester.receive_reply()
+        message_body = self._get_message_body(reply)
+
+        if isinstance(message_body, ppx_ForwardResult.ForwardResult):
+            result = self._protocol_tensor_to_variable(message_body.Output())
+            return result
+        else:
+            raise RuntimeError('ppx (Python): Unexpected reply to forward function run.')
+
+    def _run_function_backward(self, name, input, grad_output):
+        builder = flatbuffers.Builder(64)
+
+        # construct MessageBody
+        arguments = self._variable_to_protocol_tensor(builder, input.detach())
+        grad_out = self._variable_to_protocol_tensor(builder, grad_output.detach())
+        fname = builder.CreateString(name)
+        ppx_Backward.BackwardStart(builder)
+        ppx_Backward.BackwardAddName(builder, name)
+        ppx_Backward.BackwardAddInput(builder, arguments)
+        ppx_Backward.BackwardAddGradOutput(builder, grad_output)
+        message_body = ppx_Backward.BackwardEnd(builder)
+        builder.Finish(message_body)
+
+        # construct Message
+        ppx_Message.MessageStart(builder)
+        ppx_Message.MessageAddBodyType(builder, ppx_MessageBody.MessageBody().Backward)
+        ppx_Message.MessageAddBody(builder, message_body)
+        message = ppx_Message.MessageEnd(builder)
+        builder.Finish(message)
+
+        message = builder.Output()
+        self._requester.send_request(message)
+
+        reply = self._requester.receive_reply()
+        message_body = self._get_message_body(reply)
+
+        if isinstance(message_body, ppx_ForwardResult.BackwardResult):
+            result = self._protocol_tensor_to_variable(message_body.GradInput())
+            return result
+        else:
+            raise RuntimeError('ppx (Python): Unexpected reply to backward function run.')
 
     def forward(self):
         builder = flatbuffers.Builder(64)

@@ -178,6 +178,17 @@ class Model():
         dataset = DatasetOnline(self, None, prior_inflation=prior_inflation)
         dataset.save_dataset(dataset_dir=dataset_dir, num_traces=num_traces, num_traces_per_file=num_traces_per_file, *args, **kwargs)
 
+class FunctionRemote(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, remote, name, input):
+        server = remote._connect()
+        ctx.save_for_backward(server, name, input)
+        return server._run_function_forward(name, input)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        server,name,input = ctx.saved_tensors
+        return server._run_function_backward(name, input, grad_output)
 
 class ModelRemote(Model):
     def __init__(self, server_address='tcp://127.0.0.1:5555', *args, **kwargs):
@@ -185,14 +196,17 @@ class ModelRemote(Model):
         self._model_server = None
         super().__init__(*args, **kwargs)
 
+    def _connect(self):
+        if self._model_server is None:
+            self._model_server = ModelServer(self._server_address)
+            self.name = '{} running on {}'.format(self._model_server.model_name, self._model_server.system_name)
+        return self._model_server
+
     def close(self):
         if self._model_server is not None:
             self._model_server.close()
         super().close()
 
     def forward(self):
-        if self._model_server is None:
-            self._model_server = ModelServer(self._server_address)
-            self.name = '{} running on {}'.format(self._model_server.model_name, self._model_server.system_name)
-
+        self.connect()
         return self._model_server.forward()
