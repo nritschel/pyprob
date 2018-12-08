@@ -130,6 +130,10 @@ class ModelServer(object):
             message_body = ppx_Observe.Observe()
         elif body_type == ppx_MessageBody.MessageBody().Tag:
             message_body = ppx_Tag.Tag()
+        elif body_type == ppx_MessageBody.MessageBody().ForwardResult:
+            message_body = ppx_ForwardResult.ForwardResult()
+        elif body_type == ppx_MessageBody.MessageBody().BackwardResult:
+            message_body = ppx_BackwardResult.BackwardResult()
         elif body_type == ppx_MessageBody.MessageBody().Reset:
             message_body = ppx_Reset.Reset()
         else:
@@ -177,7 +181,6 @@ class ModelServer(object):
         ppx_Forward.ForwardAddName(builder, fname)
         ppx_Forward.ForwardAddInput(builder, arguments)
         message_body = ppx_Forward.ForwardEnd(builder)
-        builder.Finish(message_body)
 
         # construct Message
         ppx_Message.MessageStart(builder)
@@ -206,11 +209,10 @@ class ModelServer(object):
         grad_out = self._variable_to_protocol_tensor(builder, grad_output.detach())
         fname = builder.CreateString(name)
         ppx_Backward.BackwardStart(builder)
-        ppx_Backward.BackwardAddName(builder, name)
+        ppx_Backward.BackwardAddName(builder, fname)
         ppx_Backward.BackwardAddInput(builder, arguments)
-        ppx_Backward.BackwardAddGradOutput(builder, grad_output)
+        ppx_Backward.BackwardAddGradOutput(builder, grad_out)
         message_body = ppx_Backward.BackwardEnd(builder)
-        builder.Finish(message_body)
 
         # construct Message
         ppx_Message.MessageStart(builder)
@@ -225,7 +227,7 @@ class ModelServer(object):
         reply = self._requester.receive_reply()
         message_body = self._get_message_body(reply)
 
-        if isinstance(message_body, ppx_ForwardResult.BackwardResult):
+        if isinstance(message_body, ppx_BackwardResult.BackwardResult):
             result = self._protocol_tensor_to_variable(message_body.GradInput())
             return result
         else:
