@@ -25,6 +25,8 @@ from .ppx import Forward as ppx_Forward
 from .ppx import ForwardResult as ppx_ForwardResult
 from .ppx import Backward as ppx_Backward
 from .ppx import BackwardResult as ppx_BackwardResult
+from .ppx import BatchOperation as ppx_BatchOperation
+from .ppx import BatchOperationResult as ppx_BatchOperationResult
 from .ppx import Tag as ppx_Tag
 from .ppx import TagResult as ppx_TagResult
 from .ppx import Reset as ppx_Reset
@@ -134,6 +136,8 @@ class ModelServer(object):
             message_body = ppx_ForwardResult.ForwardResult()
         elif body_type == ppx_MessageBody.MessageBody().BackwardResult:
             message_body = ppx_BackwardResult.BackwardResult()
+        elif body_type == ppx_MessageBody.MessageBody().BatchOperation:
+            message_body = ppx_BatchOperation.BatchOperation()
         elif body_type == ppx_MessageBody.MessageBody().Reset:
             message_body = ppx_Reset.Reset()
         else:
@@ -233,6 +237,168 @@ class ModelServer(object):
         else:
             raise RuntimeError('ppx (Python): Unexpected reply to backward function run.')
 
+    def _process_message(self, message_body):
+        if isinstance(message_body, ppx_RunResult.RunResult):
+            result = self._protocol_tensor_to_variable(message_body.Result())
+            return ppx_RunResult.RunResult, result
+        elif isinstance(message_body, ppx_Sample.Sample):
+            address = message_body.Address().decode('utf-8')
+            name = message_body.Name().decode('utf-8')
+            if name == '':
+                name = None
+            control = bool(message_body.Control())
+            replace = bool(message_body.Replace())
+            distribution_type = message_body.DistributionType()
+            if distribution_type == ppx_Distribution.Distribution().Uniform:
+                uniform = ppx_Uniform.Uniform()
+                uniform.Init(message_body.Distribution().Bytes, message_body.Distribution().Pos)
+                low = self._protocol_tensor_to_variable(uniform.Low())
+                high = self._protocol_tensor_to_variable(uniform.High())
+                dist = Uniform(low, high)
+            elif distribution_type == ppx_Distribution.Distribution().Normal:
+                normal = ppx_Normal.Normal()
+                normal.Init(message_body.Distribution().Bytes, message_body.Distribution().Pos)
+                mean = self._protocol_tensor_to_variable(normal.Mean())
+                stddev = self._protocol_tensor_to_variable(normal.Stddev())
+                dist = Normal(mean, stddev)
+            elif distribution_type == ppx_Distribution.Distribution().Categorical:
+                categorical = ppx_Categorical.Categorical()
+                categorical.Init(message_body.Distribution().Bytes, message_body.Distribution().Pos)
+                probs = self._protocol_tensor_to_variable(categorical.Probs())
+                dist = Categorical(probs)
+            elif distribution_type == ppx_Distribution.Distribution().Poisson:
+                poisson = ppx_Poisson.Poisson()
+                poisson.Init(message_body.Distribution().Bytes, message_body.Distribution().Pos)
+                rate = self._protocol_tensor_to_variable(poisson.Rate())
+                dist = Poisson(rate)
+            else:
+                raise RuntimeError('ppx (Python): Sample from an unexpected distribution requested.')
+
+            result = state.sample(distribution=dist, control=control, replace=replace, name=name, address=address)
+            return ppx_Sample.Sample, result
+
+        elif isinstance(message_body, ppx_Observe.Observe):
+            address = message_body.Address().decode('utf-8')
+            name = message_body.Name().decode('utf-8')
+            if name == '':
+                name = None
+            value = self._protocol_tensor_to_variable(message_body.Value())
+            distribution_type = message_body.DistributionType()
+            if distribution_type == ppx_Distribution.Distribution().NONE:
+                dist = None
+            elif distribution_type == ppx_Distribution.Distribution().Uniform:
+                uniform = ppx_Uniform.Uniform()
+                uniform.Init(message_body.Distribution().Bytes, message_body.Distribution().Pos)
+                low = self._protocol_tensor_to_variable(uniform.Low())
+                high = self._protocol_tensor_to_variable(uniform.High())
+                dist = Uniform(low, high)
+            elif distribution_type == ppx_Distribution.Distribution().Normal:
+                normal = ppx_Normal.Normal()
+                normal.Init(message_body.Distribution().Bytes, message_body.Distribution().Pos)
+                mean = self._protocol_tensor_to_variable(normal.Mean())
+                stddev = self._protocol_tensor_to_variable(normal.Stddev())
+                dist = Normal(mean, stddev)
+            elif distribution_type == ppx_Distribution.Distribution().Categorical:
+                categorical = ppx_Categorical.Categorical()
+                categorical.Init(message_body.Distribution().Bytes, message_body.Distribution().Pos)
+                probs = self._protocol_tensor_to_variable(categorical.Probs())
+                dist = Categorical(probs)
+            elif distribution_type == ppx_Distribution.Distribution().Poisson:
+                poisson = ppx_Poisson.Poisson()
+                poisson.Init(message_body.Distribution().Bytes, message_body.Distribution().Pos)
+                rate = self._protocol_tensor_to_variable(poisson.Rate())
+                dist = Poisson(rate)
+            else:
+                raise RuntimeError('ppx (Python): Sample from an unexpected distribution requested: {}'.format(distribution_type))
+
+            state.observe(distribution=dist, value=value, name=name, address=address)
+            return ppx_Observe.Observe, None
+
+        elif isinstance(message_body, ppx_Tag.Tag):
+            address = message_body.Address().decode('utf-8')
+            name = message_body.Name().decode('utf-8')
+            if name == '':
+                name = None
+            value = self._protocol_tensor_to_variable(message_body.Value())
+            state.tag(value=value, name=name, address=address)
+
+            return ppx_Tag.Tag, None
+
+        elif isinstance(message_body, ppx_Reset.Reset):
+            raise RuntimeError('ppx (Python): Received a reset request. Protocol out of sync.')
+        else:
+            raise RuntimeError('ppx (Python): Received unexpected message.')
+
+    def _to_reply(self, message_type, value, builder):
+        if message_type == ppx_Sample.Sample:
+            result = self._variable_to_protocol_tensor(builder, value)
+            ppx_SampleResult.SampleResultStart(builder)
+            ppx_SampleResult.SampleResultAddResult(builder, result)
+            message_body = ppx_SampleResult.SampleResultEnd(builder)
+
+            # construct Message
+            ppx_Message.MessageStart(builder)
+            ppx_Message.MessageAddBodyType(builder, ppx_MessageBody.MessageBody().SampleResult)
+            ppx_Message.MessageAddBody(builder, message_body)
+            message = ppx_Message.MessageEnd(builder)
+            return message
+
+        elif message_type == ppx_Observe.Observe:
+            ppx_ObserveResult.ObserveResultStart(builder)
+            message_body = ppx_ObserveResult.ObserveResultEnd(builder)
+
+            # construct Message
+            ppx_Message.MessageStart(builder)
+            ppx_Message.MessageAddBodyType(builder, ppx_MessageBody.MessageBody().ObserveResult)
+            ppx_Message.MessageAddBody(builder, message_body)
+            message = ppx_Message.MessageEnd(builder)
+            return message
+
+        elif message_type == ppx_Tag.Tag:
+            ppx_TagResult.TagResultStart(builder)
+            message_body = ppx_TagResult.TagResultEnd(builder)
+
+            # construct Message
+            ppx_Message.MessageStart(builder)
+            ppx_Message.MessageAddBodyType(builder, ppx_MessageBody.MessageBody().TagResult)
+            ppx_Message.MessageAddBody(builder, message_body)
+            message = ppx_Message.MessageEnd(builder)
+            return message
+
+        elif message_type == ppx_BatchOperation.BatchOperation:
+            # construct Message
+            ppx_Message.MessageStart(builder)
+            ppx_Message.MessageAddBodyType(builder, ppx_MessageBody.MessageBody().BatchOperationResult)
+            ppx_Message.MessageAddBody(builder, value)
+            message = ppx_Message.MessageEnd(builder)
+            return message
+
+        else:
+            raise RuntimeError('ppx (Python): No reply for message: {}.'.format(message_type))
+
+    def _send_reply(self, results):
+        builder = flatbuffers.Builder(64)
+
+        if len(results) == 1:
+            message_type, value = results[0]
+            message = self._to_reply(message_type, value, builder)
+        else:
+            ppx_BatchOperationResult.BatchOperationResultStart(builder)
+            ppx_BatchOperationResult.BatchOperationResultStartResultsVector(builder, len(results))
+
+            for message_type, value in results:
+                message = self._to_message(message_type, value, builder)
+                ppx_BatchOperationResult.BatchOperationResultAddResults(message)
+
+            builder.EndVector(len(results))
+            offset = ppx_BatchOperationResult.BatchOperationResultEnd(builder)
+
+            message = self._to_reply(ppx_BatchOperation.BatchOperation, offset, builder)
+
+        builder.Finish(message)
+        message = builder.Output()
+        self._requester.send_request(message)
+
     def forward(self):
         builder = flatbuffers.Builder(64)
 
@@ -254,126 +420,27 @@ class ModelServer(object):
             reply = self._requester.receive_reply()
             message_body = self._get_message_body(reply)
 
-            if isinstance(message_body, ppx_RunResult.RunResult):
-                result = self._protocol_tensor_to_variable(message_body.Result())
-                return result
-            elif isinstance(message_body, ppx_Sample.Sample):
-                address = message_body.Address().decode('utf-8')
-                name = message_body.Name().decode('utf-8')
-                if name == '':
-                    name = None
-                control = bool(message_body.Control())
-                replace = bool(message_body.Replace())
-                distribution_type = message_body.DistributionType()
-                if distribution_type == ppx_Distribution.Distribution().Uniform:
-                    uniform = ppx_Uniform.Uniform()
-                    uniform.Init(message_body.Distribution().Bytes, message_body.Distribution().Pos)
-                    low = self._protocol_tensor_to_variable(uniform.Low())
-                    high = self._protocol_tensor_to_variable(uniform.High())
-                    dist = Uniform(low, high)
-                elif distribution_type == ppx_Distribution.Distribution().Normal:
-                    normal = ppx_Normal.Normal()
-                    normal.Init(message_body.Distribution().Bytes, message_body.Distribution().Pos)
-                    mean = self._protocol_tensor_to_variable(normal.Mean())
-                    stddev = self._protocol_tensor_to_variable(normal.Stddev())
-                    dist = Normal(mean, stddev)
-                elif distribution_type == ppx_Distribution.Distribution().Categorical:
-                    categorical = ppx_Categorical.Categorical()
-                    categorical.Init(message_body.Distribution().Bytes, message_body.Distribution().Pos)
-                    probs = self._protocol_tensor_to_variable(categorical.Probs())
-                    dist = Categorical(probs)
-                elif distribution_type == ppx_Distribution.Distribution().Poisson:
-                    poisson = ppx_Poisson.Poisson()
-                    poisson.Init(message_body.Distribution().Bytes, message_body.Distribution().Pos)
-                    rate = self._protocol_tensor_to_variable(poisson.Rate())
-                    dist = Poisson(rate)
-                else:
-                    raise RuntimeError('ppx (Python): Sample from an unexpected distribution requested.')
-                result = state.sample(distribution=dist, control=control, replace=replace, name=name, address=address)
-                builder = flatbuffers.Builder(64)
-                result = self._variable_to_protocol_tensor(builder, result)
-                ppx_SampleResult.SampleResultStart(builder)
-                ppx_SampleResult.SampleResultAddResult(builder, result)
-                message_body = ppx_SampleResult.SampleResultEnd(builder)
+            if isinstance(message_body, ppx_BatchOperation.BatchOperation):
+                num_ops = message_body.OperationsLength()
+                results = []
 
-                # construct Message
-                ppx_Message.MessageStart(builder)
-                ppx_Message.MessageAddBodyType(builder, ppx_MessageBody.MessageBody().SampleResult)
-                ppx_Message.MessageAddBody(builder, message_body)
-                message = ppx_Message.MessageEnd(builder)
-                builder.Finish(message)
+                for i in range(num_ops):
+                    message = message_body.Operations(i)
+                    body = self._get_message_body(message)
 
-                message = builder.Output()
-                self._requester.send_request(message)
-            elif isinstance(message_body, ppx_Observe.Observe):
-                address = message_body.Address().decode('utf-8')
-                name = message_body.Name().decode('utf-8')
-                if name == '':
-                    name = None
-                value = self._protocol_tensor_to_variable(message_body.Value())
-                distribution_type = message_body.DistributionType()
-                if distribution_type == ppx_Distribution.Distribution().NONE:
-                    dist = None
-                elif distribution_type == ppx_Distribution.Distribution().Uniform:
-                    uniform = ppx_Uniform.Uniform()
-                    uniform.Init(message_body.Distribution().Bytes, message_body.Distribution().Pos)
-                    low = self._protocol_tensor_to_variable(uniform.Low())
-                    high = self._protocol_tensor_to_variable(uniform.High())
-                    dist = Uniform(low, high)
-                elif distribution_type == ppx_Distribution.Distribution().Normal:
-                    normal = ppx_Normal.Normal()
-                    normal.Init(message_body.Distribution().Bytes, message_body.Distribution().Pos)
-                    mean = self._protocol_tensor_to_variable(normal.Mean())
-                    stddev = self._protocol_tensor_to_variable(normal.Stddev())
-                    dist = Normal(mean, stddev)
-                elif distribution_type == ppx_Distribution.Distribution().Categorical:
-                    categorical = ppx_Categorical.Categorical()
-                    categorical.Init(message_body.Distribution().Bytes, message_body.Distribution().Pos)
-                    probs = self._protocol_tensor_to_variable(categorical.Probs())
-                    dist = Categorical(probs)
-                elif distribution_type == ppx_Distribution.Distribution().Poisson:
-                    poisson = ppx_Poisson.Poisson()
-                    poisson.Init(message_body.Distribution().Bytes, message_body.Distribution().Pos)
-                    rate = self._protocol_tensor_to_variable(poisson.Rate())
-                    dist = Poisson(rate)
-                else:
-                    raise RuntimeError('ppx (Python): Sample from an unexpected distribution requested: {}'.format(distribution_type))
+                    message_type, value = self._process_message(body)
+                    if message_type == ppx_RunResult.RunResult:
+                        raise RuntimeError('ppx (Python): RunResult not accepted in a batch operation')
 
-                state.observe(distribution=dist, value=value, name=name, address=address)
-                builder = flatbuffers.Builder(64)
-                ppx_ObserveResult.ObserveResultStart(builder)
-                message_body = ppx_ObserveResult.ObserveResultEnd(builder)
+                    results.append((message_type, value))
 
-                # construct Message
-                ppx_Message.MessageStart(builder)
-                ppx_Message.MessageAddBodyType(builder, ppx_MessageBody.MessageBody().ObserveResult)
-                ppx_Message.MessageAddBody(builder, message_body)
-                message = ppx_Message.MessageEnd(builder)
-                builder.Finish(message)
+                self._send_reply(results)
 
-                message = builder.Output()
-                self._requester.send_request(message)
-            elif isinstance(message_body, ppx_Tag.Tag):
-                address = message_body.Address().decode('utf-8')
-                name = message_body.Name().decode('utf-8')
-                if name == '':
-                    name = None
-                value = self._protocol_tensor_to_variable(message_body.Value())
-                state.tag(value=value, name=name, address=address)
-                builder = flatbuffers.Builder(64)
-                ppx_TagResult.TagResultStart(builder)
-                message_body = ppx_TagResult.TagResultEnd(builder)
-
-                # construct Message
-                ppx_Message.MessageStart(builder)
-                ppx_Message.MessageAddBodyType(builder, ppx_MessageBody.MessageBody().TagResult)
-                ppx_Message.MessageAddBody(builder, message_body)
-                message = ppx_Message.MessageEnd(builder)
-                builder.Finish(message)
-
-                message = builder.Output()
-                self._requester.send_request(message)
-            elif isinstance(message_body, ppx_Reset.Reset):
-                raise RuntimeError('ppx (Python): Received a reset request. Protocol out of sync.')
             else:
-                raise RuntimeError('ppx (Python): Received unexpected message.')
+                message_type, value = self._process_message(message_body)
+                if message_type == ppx_RunResult.RunResult:
+                    return value
+
+                self._send_reply([(message_type, value)])
+
+
