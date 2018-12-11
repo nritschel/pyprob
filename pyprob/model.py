@@ -192,13 +192,17 @@ class FunctionRemote(torch.autograd.Function):
     @staticmethod
     def forward(ctx, remote, name, input):
         server = remote._connect()
-        ctx.save_for_backward(server, name, input)
+        ctx.server = server
+        ctx.name = name
+        ctx.save_for_backward(input)
         return server._run_function_forward(name, input)
 
     @staticmethod
     def backward(ctx, grad_output):
-        server,name,input = ctx.saved_tensors
-        return server._run_function_backward(name, input, grad_output)
+        server = ctx.server
+        name = ctx.name
+        input, = ctx.saved_tensors
+        return None, None, server._run_function_backward(name, input, grad_output)
 
 class RemoteModel(Model):
     def __init__(self, server_address='tcp://127.0.0.1:5555', *args, **kwargs):

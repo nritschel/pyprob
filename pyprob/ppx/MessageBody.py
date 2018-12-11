@@ -18,5 +18,7 @@ class MessageBody(object):
     ForwardResult = 12
     Backward = 13
     BackwardResult = 14
-    Reset = 15
+    BatchOperation = 15
+    BatchOperationResult = 16
+    Reset = 17
 
