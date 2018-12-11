@@ -9,7 +9,7 @@ from termcolor import colored
 from .distributions import Empirical
 from . import util, state, TraceMode, PriorInflation, InferenceEngine, InferenceNetwork, Optimizer, AddressDictionary
 from .nn import InferenceNetwork as InferenceNetworkBase
-from .nn import DatasetOnline, DatasetOffline, InferenceNetworkFeedForward, InferenceNetworkLSTM
+from .nn import OnlineDataset, OfflineDataset, InferenceNetworkFeedForward, InferenceNetworkLSTM
 from .remote import ModelServer
 
 
@@ -138,18 +138,18 @@ class Model():
     def posterior_distribution(self, num_traces=10, inference_engine=InferenceEngine.IMPORTANCE_SAMPLING, initial_trace=None, map_func=lambda trace: trace.result, observe=None, file_name=None, *args, **kwargs):
         return self.posterior_traces(num_traces=num_traces, inference_engine=inference_engine, initial_trace=initial_trace, map_func=map_func, observe=observe, file_name=file_name, *args, **kwargs)
 
-    def learn_inference_network(self, num_traces=None, inference_network=InferenceNetwork.FEEDFORWARD, prior_inflation=PriorInflation.DISABLED, dataset_dir=None, dataset_valid_dir=None, observe_embeddings={}, batch_size=64, valid_size=None, valid_every=None, optimizer_type=Optimizer.ADAM, learning_rate=0.001, momentum=0.9, weight_decay=0., save_file_name_prefix=None, save_every_sec=600, pre_generate_layers=True, distributed_backend=None, dataloader_offline_num_workers=0):
+    def learn_inference_network(self, num_traces, inference_network=InferenceNetwork.FEEDFORWARD, prior_inflation=PriorInflation.DISABLED, dataset_dir=None, dataset_valid_dir=None, observe_embeddings={}, batch_size=64, valid_size=None, valid_every=None, optimizer_type=Optimizer.ADAM, learning_rate=0.001, momentum=0.9, weight_decay=0., save_file_name_prefix=None, save_every_sec=600, pre_generate_layers=True, distributed_backend=None, dataloader_offline_num_workers=0):
         if dataset_dir is None:
-            dataset = DatasetOnline(model=self, prior_inflation=prior_inflation)
+            dataset = OnlineDataset(model=self, prior_inflation=prior_inflation)
         else:
-            dataset = DatasetOffline(dataset_dir=dataset_dir)
+            dataset = OfflineDataset(dataset_dir=dataset_dir)
 
         dataset_valid = None
         if dataset_valid_dir is None:
             if valid_size is not None:
-                dataset_valid = DatasetOnline(model=self, length=valid_size, prior_inflation=prior_inflation)
+                dataset_valid = OnlineDataset(model=self, length=valid_size, prior_inflation=prior_inflation)
         else:
-            dataset_valid = DatasetOffline(dataset_dir=dataset_valid_dir)
+            dataset_valid = OfflineDataset(dataset_dir=dataset_valid_dir)
 
         if self._inference_network is None:
             print('Creating new inference network...')
@@ -160,10 +160,10 @@ class Model():
             else:
                 raise ValueError('Unknown inference_network: {}'.format(inference_network))
             if pre_generate_layers:
-                if dataset_dir is not None:
-                    self._inference_network._pre_generate_layers(dataset, save_file_name_prefix=save_file_name_prefix)
                 if dataset_valid_dir is not None:
                     self._inference_network._pre_generate_layers(dataset_valid, save_file_name_prefix=save_file_name_prefix)
+                if dataset_dir is not None:
+                    self._inference_network._pre_generate_layers(dataset, save_file_name_prefix=save_file_name_prefix)
         else:
             print('Continuing to train existing inference network...')
             print('Total number of parameters: {:,}'.format(self._inference_network._history_num_params[-1]))
@@ -185,7 +185,7 @@ class Model():
         if not os.path.exists(dataset_dir):
             print('Directory does not exist, creating: {}'.format(dataset_dir))
             os.makedirs(dataset_dir)
-        dataset = DatasetOnline(self, None, prior_inflation=prior_inflation)
+        dataset = OnlineDataset(self, None, prior_inflation=prior_inflation)
         dataset.save_dataset(dataset_dir=dataset_dir, num_traces=num_traces, num_traces_per_file=num_traces_per_file, *args, **kwargs)
 
 class FunctionRemote(torch.autograd.Function):
@@ -200,7 +200,7 @@ class FunctionRemote(torch.autograd.Function):
         server,name,input = ctx.saved_tensors
         return server._run_function_backward(name, input, grad_output)
 
-class ModelRemote(Model):
+class RemoteModel(Model):
     def __init__(self, server_address='tcp://127.0.0.1:5555', *args, **kwargs):
         self._server_address = server_address
         self._model_server = None

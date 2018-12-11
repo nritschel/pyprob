@@ -221,7 +221,7 @@ class Empirical(Distribution):
         values = []
         for i in range(self._length):
             values.append(func(self._get_value(i)))
-        return Empirical(values=values, log_weights=self._log_weights, *args, **kwargs)
+        return Empirical(values=values, log_weights=self._log_weights, name=self.name, *args, **kwargs)
 
     def filter(self, func, *args, **kwargs):
         self._check_finalized()
@@ -234,7 +234,7 @@ class Empirical(Distribution):
             if func(value):
                 filtered_values.append(value)
                 filtered_log_weights.append(self._get_log_weight(i))
-        return Empirical(filtered_values, log_weights=filtered_log_weights, *args, **kwargs)
+        return Empirical(filtered_values, log_weights=filtered_log_weights, name=self.name, *args, **kwargs)
 
     def resample(self, num_samples, map_func=None, min_index=None, max_index=None, *args, **kwargs):
         self._check_finalized()
@@ -287,11 +287,23 @@ class Empirical(Distribution):
     @property
     def mode(self):
         self._check_finalized()
-        if self._uniform_weights:
-            print(colored('Warning: weights are uniform and there is no unique mode.', 'red', attrs=['bold']))
         if self._mode is None:
-            _, max_index = util.to_tensor(self._log_weights).max(-1)
-            self._mode = self._get_value(int(max_index))
+            if self._uniform_weights:
+                counts = {}
+                util.progress_bar_init('Computing mode...', self._length, 'Values')
+                print(colored('Warning: weights are uniform and mode is correct only if values in Empirical are hashable', 'red', attrs=['bold']))
+                for i in range(self._length):
+                    util.progress_bar_update(i)
+                    value = self._get_value(i)
+                    if value in counts:
+                        counts[value] += 1
+                    else:
+                        counts[value] = 1
+                util.progress_bar_end()
+                self._mode = sorted(counts.items(), key=lambda x: x[1], reverse=True)[0][0]
+            else:
+                _, max_index = util.to_tensor(self._log_weights).max(-1)
+                self._mode = self._get_value(int(max_index))
         return self._mode
 
     def arg_max(self, map_func):

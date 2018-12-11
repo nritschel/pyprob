@@ -14,7 +14,7 @@ import copy
 from threading import Thread
 from termcolor import colored
 
-from . import Batch, DatasetOffline, EmbeddingFeedForward, EmbeddingCNN2D5C, EmbeddingCNN3D5C
+from . import Batch, OfflineDataset, EmbeddingFeedForward, EmbeddingCNN2D5C, EmbeddingCNN3D5C
 from .. import __version__, util, Optimizer, ObserveEmbedding
 
 
@@ -46,6 +46,14 @@ class InferenceNetwork(nn.Module):
         self._history_valid_loss_trace = []
         self._history_num_params = []
         self._history_num_params_trace = []
+        self._distributed_train_loss = util.to_tensor(0.)
+        self._distributed_valid_loss = util.to_tensor(0.)
+        self._distributed_train_loss_min = float('inf')
+        self._distributed_valid_loss_min = float('inf')
+        self._distributed_history_train_loss = []
+        self._distributed_history_train_loss_trace = []
+        self._distributed_history_valid_loss = []
+        self._distributed_history_valid_loss_trace = []
         self._modified = util.get_time_str()
         self._updates = 0
         self._on_cuda = False
@@ -241,7 +249,27 @@ class InferenceNetwork(nn.Module):
                 # pass
                 print('None for grad, with param.size=', param.size())
 
-    def optimize(self, num_traces, dataset, dataset_valid, batch_size=64, valid_every=None, optimizer_type=Optimizer.ADAM, learning_rate=0.0001, momentum=0.9, weight_decay=1e-5, save_file_name_prefix=None, save_every_sec=600, distributed_backend=None, distributed_params_sync_interval=10000, dataloader_offline_num_workers=0, *args, **kwargs):
+    def _distributed_update_train_loss(self, loss, world_size):
+        self._distributed_train_loss = util.to_tensor(float(loss))
+        dist.all_reduce(self._distributed_train_loss)
+        self._distributed_train_loss /= float(world_size)
+        self._distributed_history_train_loss.append(float(self._distributed_train_loss))
+        self._distributed_history_train_loss_trace.append(self._total_train_traces)
+        if float(self._distributed_train_loss) < self._distributed_train_loss_min:
+            self._distributed_train_loss_min = float(self._distributed_train_loss)
+        print(colored('Distributed mean train. loss across ranks : {:+.2e}, min. train. loss: {:+.2e}'.format(self._distributed_train_loss, self._distributed_train_loss_min), 'yellow', attrs=['bold']))
+
+    def _distributed_update_valid_loss(self, loss, world_size):
+        self._distributed_valid_loss = util.to_tensor(float(loss))
+        dist.all_reduce(self._distributed_valid_loss)
+        self._distributed_valid_loss /= float(world_size)
+        self._distributed_history_valid_loss.append(float(self._distributed_valid_loss))
+        self._distributed_history_valid_loss_trace.append(self._total_train_traces)
+        if float(self._distributed_valid_loss) < self._distributed_valid_loss_min:
+            self._distributed_valid_loss_min = float(self._distributed_valid_loss)
+        print(colored('Distributed mean valid. loss across ranks : {:+.2e}, min. valid. loss: {:+.2e}'.format(self._distributed_valid_loss, self._distributed_valid_loss_min), 'yellow', attrs=['bold']))
+
+    def optimize(self, num_traces, dataset, dataset_valid, batch_size=64, valid_every=None, optimizer_type=Optimizer.ADAM, learning_rate=0.0001, momentum=0.9, weight_decay=1e-5, save_file_name_prefix=None, save_every_sec=600, distributed_backend=None, distributed_params_sync_every=10000, distributed_loss_update_every=None, dataloader_offline_num_workers=0, *args, **kwargs):
         if not self._layers_initialized:
             self._init_layers_observe_embedding(self._observe_embeddings, example_trace=dataset.__getitem__(0))
             self._init_layers()
@@ -254,7 +282,7 @@ class InferenceNetwork(nn.Module):
             dist.init_process_group(backend=distributed_backend)
             distributed_world_size = dist.get_world_size()
             distributed_rank = dist.get_rank()
-            util.init_distributed_print(distributed_rank, distributed_world_size, True)
+            util.init_distributed_print(distributed_rank, distributed_world_size, False)
             print(colored('Distributed synchronous training', 'yellow', attrs=['bold']))
             print(colored('Distributed backend       : {}'.format(distributed_backend), 'yellow', attrs=['bold']))
             print(colored('Distributed world size    : {}'.format(distributed_world_size), 'yellow', attrs=['bold']))
@@ -263,6 +291,7 @@ class InferenceNetwork(nn.Module):
             print(colored('Distributed optimizer     : {}'.format(str(optimizer_type)), 'yellow', attrs=['bold']))
             self._distributed_backend = distributed_backend
             self._distributed_world_size = distributed_world_size
+
         self._optimizer_type = optimizer_type
         self._batch_size = batch_size
         self._learning_rate = learning_rate * distributed_world_size
@@ -274,6 +303,8 @@ class InferenceNetwork(nn.Module):
         time_last_batch = time.time()
         if valid_every is None:
             valid_every = max(100, num_traces / 1000)
+        if distributed_loss_update_every is None:
+            distributed_loss_update_every = valid_every
         last_validation_trace = -valid_every + 1
         epoch = 0
         iteration = 0
@@ -285,7 +316,7 @@ class InferenceNetwork(nn.Module):
         time_since_loss_min_str = ''
         last_auto_save_time = time.time() - save_every_sec
         num_workers = 0
-        if isinstance(dataset, DatasetOffline):  # and (distributed_world_size == 1):
+        if isinstance(dataset, OfflineDataset):  # and (distributed_world_size == 1):
             num_workers = dataloader_offline_num_workers
         # print('num_workers', num_workers)
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, collate_fn=lambda x: Batch(x))
@@ -294,12 +325,11 @@ class InferenceNetwork(nn.Module):
         while not stop:
             epoch += 1
             for i_batch, batch in enumerate(dataloader):
-                iteration += 1
-
-                if (distributed_world_size > 1) and (iteration % distributed_params_sync_interval == 0):
+                # Important, a self._distributed_sync_parameters() needs to happen at the very beginning of a training
+                if (distributed_world_size > 1) and (iteration % distributed_params_sync_every == 0):
                     self._distributed_sync_parameters()
 
-                if self._layers_pre_generated:
+                if self._layers_pre_generated:  # and (distributed_world_size > 1):
                     layers_changed = False
                 else:
                     layers_changed = self._polymorph(batch)
@@ -379,6 +409,13 @@ class InferenceNetwork(nn.Module):
                             self._history_valid_loss_trace.append(self._total_train_traces)
                             last_validation_trace = trace - 1
 
+                            if distributed_world_size > 1:
+                                self._distributed_update_train_loss(loss, distributed_world_size)
+                                self._distributed_update_valid_loss(valid_loss, distributed_world_size)
+
+                    if (distributed_world_size > 1) and (iteration % distributed_loss_update_every == 0):
+                        self._distributed_update_train_loss(loss, distributed_world_size)
+
                     if (distributed_rank == 0) and (save_file_name_prefix is not None):
                         if time.time() - last_auto_save_time > save_every_sec:
                             last_auto_save_time = time.time()
@@ -392,8 +429,10 @@ class InferenceNetwork(nn.Module):
                     sys.stdout.flush()
                     if stop:
                         break
+                iteration += 1
+
         print()
         if (distributed_rank == 0) and (save_file_name_prefix is not None):
-            file_name = '{}_{}.network'.format(save_file_name_prefix, util.get_time_stamp())
+            file_name = '{}_{}_traces_{}.network'.format(save_file_name_prefix, util.get_time_stamp(), self._total_train_traces)
             print('\rSaving to disk...  ', end='\r')
             self._save(file_name)

@@ -35,11 +35,12 @@ class Batch():
             trace.to(device=device)
 
 
-class DatasetOnline(Dataset):
+class OnlineDataset(Dataset):
     def __init__(self, model, length=None, prior_inflation=PriorInflation.DISABLED):
         self._model = model
         if length is None:
-            self._length = int(1e6)
+            length = int(1e6)
+        self._length = length
         self._prior_inflation = prior_inflation
 
     def __len__(self):
@@ -121,7 +122,7 @@ class DatasetOnline(Dataset):
         util.progress_bar_end()
 
 
-class DatasetOfflinePerFile(Dataset):
+class OfflineDatasetFile(Dataset):
     def __init__(self, file_name):
         self._file_name = file_name
         self._shelf = ConcurrentShelf(file_name)
@@ -134,7 +135,7 @@ class DatasetOfflinePerFile(Dataset):
         return self._shelf[str(idx)]
 
 
-class DatasetOffline(ConcatDataset):
+class OfflineDataset(ConcatDataset):
     def __init__(self, dataset_dir):
         self._dataset_dir = dataset_dir
         files = [name for name in os.listdir(self._dataset_dir)]
@@ -142,7 +143,7 @@ class DatasetOffline(ConcatDataset):
         datasets = []
         for file in files:
             try:
-                dataset = DatasetOfflinePerFile(file)
+                dataset = OfflineDatasetFile(file)
                 datasets.append(dataset)
             except Exception as e:
                 print(e)
