@@ -222,5 +222,5 @@ class RemoteModel(Model):
         super().close()
 
     def forward(self):
-        self.connect()
+        self._connect()
         return self._model_server.forward()
