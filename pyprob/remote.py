@@ -119,8 +119,7 @@ class ModelServer(object):
         ppx_Tensor.TensorAddShape(builder, shape)
         return ppx_Tensor.TensorEnd(builder)
 
-    def _get_message_body(self, message_buffer):
-        message = ppx_Message.Message.GetRootAsMessage(message_buffer, 0)
+    def _get_message_body_from_message(self, message):
         body_type = message.BodyType()
         if body_type == ppx_MessageBody.MessageBody().HandshakeResult:
             message_body = ppx_HandshakeResult.HandshakeResult()
@@ -144,6 +143,10 @@ class ModelServer(object):
             raise RuntimeError('ppx (Python): Received unexpected message body type: {}'.format(body_type))
         message_body.Init(message.Body().Bytes, message.Body().Pos)
         return message_body
+
+    def _get_message_body(self, message_buffer):
+        message = ppx_Message.Message.GetRootAsMessage(message_buffer, 0)
+        return self._get_message_body_from_message(message)
 
     def _handshake(self):
         builder = flatbuffers.Builder(64)
@@ -426,7 +429,7 @@ class ModelServer(object):
 
                 for i in range(num_ops):
                     message = message_body.Operations(i)
-                    body = self._get_message_body(message)
+                    body = self._get_message_body_from_message(message)
 
                     message_type, value = self._process_message(body)
                     if message_type == ppx_RunResult.RunResult:
