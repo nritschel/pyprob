@@ -382,22 +382,26 @@ class ModelServer(object):
     def _send_reply(self, results):
         builder = flatbuffers.Builder(64)
 
-        messages = []
-        for message_type, value in reversed(results):
-            messages.append(self._to_reply(message_type, value, builder))
+        if isinstance(results, tuple):
+            message_type, value = results
+            message = self._to_reply(message_type, value, builder)
+        else:
+            messages = []
+            for message_type, value in reversed(results):
+                messages.append(self._to_reply(message_type, value, builder))
 
-        ppx_BatchOperationResult.BatchOperationResultStartResultsVector(builder, len(results))
-        i = 0
-        for message_type, value in reversed(results):
-            builder.PrependUOffsetTRelative(messages[i])
-            i += 1
-        results = builder.EndVector(len(results))
+            ppx_BatchOperationResult.BatchOperationResultStartResultsVector(builder, len(results))
+            i = 0
+            for message_type, value in reversed(results):
+                builder.PrependUOffsetTRelative(messages[i])
+                i += 1
+            results = builder.EndVector(len(results))
 
-        ppx_BatchOperationResult.BatchOperationResultStart(builder)
-        ppx_BatchOperationResult.BatchOperationResultAddResults(builder, results)
-        offset = ppx_BatchOperationResult.BatchOperationResultEnd(builder)
+            ppx_BatchOperationResult.BatchOperationResultStart(builder)
+            ppx_BatchOperationResult.BatchOperationResultAddResults(builder, results)
+            offset = ppx_BatchOperationResult.BatchOperationResultEnd(builder)
 
-        message = self._to_reply(ppx_BatchOperation.BatchOperation, offset, builder)
+            message = self._to_reply(ppx_BatchOperation.BatchOperation, offset, builder)
 
         builder.Finish(message)
         message = builder.Output()
@@ -445,6 +449,6 @@ class ModelServer(object):
                 if message_type == ppx_RunResult.RunResult:
                     return value
 
-                self._send_reply([(message_type, value)])
+                self._send_reply((message_type, value))
 
 
