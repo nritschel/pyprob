@@ -382,21 +382,22 @@ class ModelServer(object):
     def _send_reply(self, results):
         builder = flatbuffers.Builder(64)
 
-        if len(results) == 1:
-            message_type, value = results[0]
-            message = self._to_reply(message_type, value, builder)
-        else:
-            ppx_BatchOperationResult.BatchOperationResultStart(builder)
-            ppx_BatchOperationResult.BatchOperationResultStartResultsVector(builder, len(results))
+        messages = []
+        for message_type, value in reversed(results):
+            messages.append(self._to_reply(message_type, value, builder))
 
-            for message_type, value in results:
-                message = self._to_message(message_type, value, builder)
-                ppx_BatchOperationResult.BatchOperationResultAddResults(message)
+        ppx_BatchOperationResult.BatchOperationResultStartResultsVector(builder, len(results))
+        i = 0
+        for message_type, value in reversed(results):
+            builder.PrependUOffsetTRelative(messages[i])
+            i += 1
+        results = builder.EndVector(len(results))
 
-            builder.EndVector(len(results))
-            offset = ppx_BatchOperationResult.BatchOperationResultEnd(builder)
+        ppx_BatchOperationResult.BatchOperationResultStart(builder)
+        ppx_BatchOperationResult.BatchOperationResultAddResults(builder, results)
+        offset = ppx_BatchOperationResult.BatchOperationResultEnd(builder)
 
-            message = self._to_reply(ppx_BatchOperation.BatchOperation, offset, builder)
+        message = self._to_reply(ppx_BatchOperation.BatchOperation, offset, builder)
 
         builder.Finish(message)
         message = builder.Output()
